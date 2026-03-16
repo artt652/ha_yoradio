@@ -1,9 +1,14 @@
 {
-    "domain": "yoradio",
-    "name": "ёRadio",
-    "documentation": "https://github.com/artt652/ha_yoradio",
-    "dependencies": ["http", "mqtt"],
-    "codeowners": ["@e2002, artt652"],
-    "requirements": [],
-    "version": "0.10"
-  }
+  "domain": "yoradio",
+  "name": "ёRadio",
+  "version": "0.10.0",
+  "documentation": "https://github.com/artt652/ha_yoradio",
+  "issue_tracker": "https://github.com/artt652/ha_yoradio/issues",
+  "dependencies": ["mqtt"],
+  "after_dependencies": ["http"],
+  "codeowners": ["@e2002", "@artt652"],
+  "requirements": [],
+  "config_flow": true,
+  "iot_class": "local_push",
+  "integration_type": "device"
+}

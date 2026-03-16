@@ -1,44 +1,33 @@
-"""ёRadio media player platform."""
-from __future__ import annotations
-
-import asyncio
-import json
 import logging
+import voluptuous as vol
+import json
+import asyncio
 import re
 from collections import OrderedDict
 
 from aiohttp import ClientError
 
 from homeassistant.components import mqtt, media_source
+from homeassistant.components.media_player.browse_media import async_process_play_media_url
+from homeassistant.const import CONF_NAME
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
 from homeassistant.components.media_player import (
+    PLATFORM_SCHEMA,
     BrowseMedia,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
-    MediaPlayerEnqueue,
     MediaPlayerState,
+    MediaPlayerEnqueue,
     MediaType,
 )
-from homeassistant.components.media_player.browse_media import (
-    async_process_play_media_url,
-)
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    CONF_MAX_VOLUME,
-    CONF_ROOT_TOPIC,
-    COVER_CACHE_MAX,
-    DEFAULT_MAX_VOLUME,
-    DEFAULT_NAME,
-    FALLBACK_COVER,
-)
+VERSION = "0.10"
 
 _LOGGER = logging.getLogger(__name__)
 
-VERSION = "0.10.0"
+FALLBACK_COVER = "https://raw.githubusercontent.com/artt652/ha_yoradio/refs/heads/main/images/yoradio.png"
 
 SUPPORT_YORADIO = (
     MediaPlayerEntityFeature.PAUSE
@@ -55,31 +44,38 @@ SUPPORT_YORADIO = (
     | MediaPlayerEntityFeature.PLAY_MEDIA
 )
 
-# ---------------------------------------------------------------------------
-# Bounded LRU cover art cache (module-level, shared across reloads)
-# ---------------------------------------------------------------------------
-_cover_cache: OrderedDict = OrderedDict()
+DEFAULT_NAME = "yoRadio"
+CONF_MAX_VOLUME = "max_volume"
+CONF_ROOT_TOPIC = "root_topic"
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_ROOT_TOPIC, default="yoradio"): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_MAX_VOLUME, default="254"): cv.string,
+    }
+)
+
+# Bounded LRU cache to prevent unbounded memory growth
+COVER_CACHE_MAX = 200
+cover_cache: OrderedDict = OrderedDict()
 
 
-def _cover_cache_get(key: str) -> str | None:
-    if key in _cover_cache:
-        _cover_cache.move_to_end(key)
-        return _cover_cache[key]
+def cover_cache_get(key):
+    if key in cover_cache:
+        cover_cache.move_to_end(key)
+        return cover_cache[key]
     return None
 
 
-def _cover_cache_set(key: str, value: str) -> None:
-    _cover_cache[key] = value
-    _cover_cache.move_to_end(key)
-    if len(_cover_cache) > COVER_CACHE_MAX:
-        _cover_cache.popitem(last=False)
+def cover_cache_set(key, value):
+    cover_cache[key] = value
+    cover_cache.move_to_end(key)
+    if len(cover_cache) > COVER_CACHE_MAX:
+        cover_cache.popitem(last=False)
 
 
-# ---------------------------------------------------------------------------
-# Text helpers
-# ---------------------------------------------------------------------------
-
-def _clean_title(text: str) -> str:
+def clean_title(text):
     if not text:
         return ""
     text = re.sub(r"\(.*?\)", "", text)
@@ -94,21 +90,21 @@ def _clean_title(text: str) -> str:
     return text.strip()
 
 
-def _parse_artist_title(artist: str, title: str) -> tuple[str, str]:
+def parse_artist_title(artist, title):
     if title and " - " in title:
         parts = title.split(" - ", 1)
         return parts[0].strip(), parts[1].strip()
     return artist, title
 
 
-def _is_service_message(title: str) -> bool:
+def is_service_message(title: str) -> bool:
     if not title:
         return True
     t = title.lower()
     service_words = [
         "host not available",
-        "error connecting to",
-        "contenttype",
+        "Error connecting to",
+        "ContentType",
         "[ready]",
         "[stopped]",
         "[connecting]",
@@ -119,74 +115,50 @@ def _is_service_message(title: str) -> bool:
     return any(word in t for word in service_words)
 
 
-# ---------------------------------------------------------------------------
-# Platform setup — config-entry path
-# ---------------------------------------------------------------------------
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+    root_topic = config.get(CONF_ROOT_TOPIC)
+    name = config.get(CONF_NAME)
+    max_volume = int(config.get(CONF_MAX_VOLUME, 254))
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up ёRadio media player from a config entry."""
-    data = entry.data
-    root_topic: str = data[CONF_ROOT_TOPIC]
-    name: str = data.get(CONF_NAME, DEFAULT_NAME)
-    max_volume: int = int(data.get(CONF_MAX_VOLUME, DEFAULT_MAX_VOLUME))
+    playlist = []
+    api = yoradioApi(root_topic, hass, playlist)
 
-    playlist: list[str] = []
-    api = YoRadioApi(root_topic, hass, playlist)
-
-    async_add_entities([YoRadioDevice(name, max_volume, api, entry.entry_id)], True)
+    async_add_entities([yoradioDevice(name, max_volume, api)], True)
 
 
-# ---------------------------------------------------------------------------
-# API helper
-# ---------------------------------------------------------------------------
+class yoradioApi:
 
-class YoRadioApi:
-    """Thin wrapper around MQTT publish calls for ёRadio."""
-
-    def __init__(
-        self,
-        root_topic: str,
-        hass: HomeAssistant,
-        playlist: list[str],
-    ) -> None:
+    def __init__(self, root_topic, hass, playlist):
         self.hass = hass
         self.root_topic = root_topic
         self.playlist = playlist
         self.playlisturl = ""
 
-    async def set_command(self, command: str) -> None:
+    async def set_command(self, command):
         await mqtt.async_publish(self.hass, self.root_topic + "/command", command)
 
-    async def set_volume(self, volume: int) -> None:
-        await mqtt.async_publish(
-            self.hass, self.root_topic + "/command", f"vol {volume}"
-        )
+    async def set_volume(self, volume):
+        command = "vol " + str(int(volume))
+        await mqtt.async_publish(self.hass, self.root_topic + "/command", command)
 
-    async def set_source(self, source: str) -> None:
-        # Split on ". " with maxsplit=1 to handle station names that contain dots
+    async def set_source(self, source):
+        # split on ". " with maxsplit=1 to handle station names containing dots
         parts = source.split(". ", 1)
-        await mqtt.async_publish(
-            self.hass, self.root_topic + "/command", f"play {parts[0]}"
-        )
+        command = "play " + parts[0]
+        await mqtt.async_publish(self.hass, self.root_topic + "/command", command)
 
-    async def set_browse_media(self, media_content_id: str) -> None:
-        await mqtt.async_publish(
-            self.hass, self.root_topic + "/command", media_content_id
-        )
+    async def set_browse_media(self, media_content_id):
+        await mqtt.async_publish(self.hass, self.root_topic + "/command", media_content_id)
 
-    async def load_playlist(self, msg) -> None:
+    async def load_playlist(self, msg):
         self.playlisturl = msg.payload
         session = async_get_clientsession(self.hass)
         try:
             async with session.get(self.playlisturl, timeout=10) as resp:
                 resp.raise_for_status()
                 text = await resp.text(encoding="utf-8")
-        except (ClientError, asyncio.TimeoutError) as exc:
-            _LOGGER.error("Unable to fetch playlist from %s: %s", self.playlisturl, exc)
+        except (ClientError, asyncio.TimeoutError) as e:
+            _LOGGER.error(f"Unable to fetch playlist from {self.playlisturl}: {e}")
             return
 
         counter = 1
@@ -194,56 +166,30 @@ class YoRadioApi:
         for line in text.split("\n"):
             res = line.split("\t")
             if res[0] != "":
-                self.playlist.append(f"{counter}. {res[0]}")
+                self.playlist.append(str(counter) + ". " + res[0])
                 counter += 1
 
 
-# ---------------------------------------------------------------------------
-# Media player entity
-# ---------------------------------------------------------------------------
+class yoradioDevice(MediaPlayerEntity):
 
-class YoRadioDevice(MediaPlayerEntity):
-    """Representation of a ёRadio media player."""
-
-    _attr_has_entity_name = True
-    _attr_name = None  # uses device name as entity name
-
-    def __init__(
-        self,
-        name: str,
-        max_volume: int,
-        api: YoRadioApi,
-        entry_id: str,
-    ) -> None:
-        self._device_name = name
+    def __init__(self, name, max_volume, api):
+        self._name = name
         self.api = api
-        self._max_volume = max_volume
-        self._entry_id = entry_id
-
         self._state = MediaPlayerState.OFF
-        self._volume: float = 0.0
+        self._volume = 0
+        self._max_volume = max_volume
+
         self._media_title = ""
         self._track_artist = ""
         self._media_channel = ""
-        self._media_image_url: str = FALLBACK_COVER
-        self._current_source: str | None = None
+        self._media_image_url = FALLBACK_COVER
+
+        self._current_source = None
         self._last_track = ""
+        # incremented on each track change to discard stale cover fetches
         self._cover_fetch_id = 0
 
-        # Stable unique_id derived from the MQTT root topic
-        self._attr_unique_id = f"yoradio_{api.root_topic}"
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {("yoradio", self.api.root_topic)},
-            "name": self._device_name,
-            "manufacturer": "ёRadio",
-            "model": "yoRadio",
-            "sw_version": VERSION,
-        }
-
-    async def async_added_to_hass(self) -> None:
+    async def async_added_to_hass(self):
         await asyncio.sleep(3)
 
         await mqtt.async_subscribe(
@@ -262,16 +208,12 @@ class YoRadioDevice(MediaPlayerEntity):
             self.volume_listener,
         )
 
-    # ------------------------------------------------------------------
-    # MQTT listeners
-    # ------------------------------------------------------------------
-
-    async def status_listener(self, msg) -> None:
+    async def status_listener(self, msg):
         try:
             js = json.loads(msg.payload)
 
-            raw_title: str = js.get("title", "")
-            station: str = js.get("name", "")
+            raw_title = js.get("title", "")
+            station = js.get("name", "")
 
             if " - " in raw_title:
                 parts = raw_title.split(" - ", 1)
@@ -303,36 +245,34 @@ class YoRadioDevice(MediaPlayerEntity):
             else:
                 self._state = MediaPlayerState.OFF
 
-            self._current_source = f"{js['station']}. {js['name']}"
+            self._current_source = str(js["station"]) + ". " + js["name"]
 
             self.async_write_ha_state()
 
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("status parse error: %s", exc)
+        except Exception as e:
+            _LOGGER.debug(f"status parse error {e}")
 
-    async def async_update_cover(self, artist: str, title: str, fetch_id: int) -> None:
-        if _is_service_message(title):
+    async def async_update_cover(self, artist, title, fetch_id: int):
+        if is_service_message(title):
             if fetch_id == self._cover_fetch_id:
                 self._media_image_url = FALLBACK_COVER
                 self.async_write_ha_state()
             return
 
-        cover = await self._async_fetch_cover(artist, title)
+        cover = await self.async_fetch_cover(artist, title)
 
         if fetch_id == self._cover_fetch_id:
             self._media_image_url = cover if cover else FALLBACK_COVER
             self.async_write_ha_state()
 
-    async def _async_fetch_cover(self, artist: str, title: str) -> str | None:
-        artist, title = _parse_artist_title(artist, title)
-        artist = _clean_title(artist)
-        title = _clean_title(title)
+    async def async_fetch_cover(self, artist, title):
+        artist, title = parse_artist_title(artist, title)
+        artist = clean_title(artist)
+        title = clean_title(title)
 
-        query = f"{artist} {title}".strip()
-        if not query:
-            return None
+        query = artist + " " + title
 
-        cached = _cover_cache_get(query)
+        cached = cover_cache_get(query)
         if cached is not None:
             return cached
 
@@ -348,78 +288,72 @@ class YoRadioDevice(MediaPlayerEntity):
             if data.get("resultCount", 0) == 0:
                 return None
 
-            art: str | None = data["results"][0].get("artworkUrl100")
+            art = data["results"][0].get("artworkUrl100")
             if not art:
                 return None
 
             art = art.replace("100x100", "600x600")
-            _cover_cache_set(query, art)
+            cover_cache_set(query, art)
             return art
 
         except (ClientError, asyncio.TimeoutError):
             return None
 
-    async def playlist_listener(self, msg) -> None:
+    async def playlist_listener(self, msg):
         await self.api.load_playlist(msg)
         self.async_write_ha_state()
 
-    async def volume_listener(self, msg) -> None:
+    async def volume_listener(self, msg):
         self._volume = int(msg.payload) / self._max_volume
         self.async_write_ha_state()
 
-    # ------------------------------------------------------------------
-    # Entity properties
-    # ------------------------------------------------------------------
-
     @property
-    def supported_features(self) -> MediaPlayerEntityFeature:
+    def supported_features(self):
         return SUPPORT_YORADIO
 
     @property
-    def state(self) -> MediaPlayerState:
+    def name(self):
+        return self._name
+
+    @property
+    def state(self):
         return self._state
 
     @property
-    def volume_level(self) -> float:
+    def volume_level(self):
         return self._volume
 
     @property
-    def media_title(self) -> str:
+    def media_title(self):
         return self._media_title
 
     @property
-    def media_artist(self) -> str:
+    def media_artist(self):
         return self._track_artist
 
     @property
-    def media_image_url(self) -> str:
+    def media_image_url(self):
         return self._media_image_url
 
     @property
-    def source(self) -> str | None:
+    def source(self):
         return self._current_source
 
     @property
-    def source_list(self) -> list[str]:
+    def source_list(self):
         return self.api.playlist
 
-    # ------------------------------------------------------------------
-    # Service handlers
-    # ------------------------------------------------------------------
-
-    async def async_set_volume_level(self, volume: float) -> None:
+    async def async_set_volume_level(self, volume):
         await self.api.set_volume(round(volume * self._max_volume))
 
-    async def async_browse_media(
-        self,
-        media_content_type: str | None = None,
-        media_content_id: str | None = None,
-    ) -> BrowseMedia:
-        result = await media_source.async_browse_media(self.hass, media_content_id)
+    async def async_browse_media(self, media_content_type=None, media_content_id=None):
+        result = await media_source.async_browse_media(
+            self.hass,
+            media_content_id,
+        )
         if result.children:
             result.children = [
-                child
-                for child in result.children
+                child for child in result.children
                 if child.can_expand
                 or (
                     child.media_content_type is not None
@@ -431,57 +365,60 @@ class YoRadioDevice(MediaPlayerEntity):
 
     async def async_play_media(
         self,
-        media_type: str,
-        media_id: str,
-        enqueue: MediaPlayerEnqueue | None = None,
-        announce: bool | None = None,
+        media_type,
+        media_id,
+        enqueue=None,
+        announce=None,
         **kwargs,
-    ) -> None:
+    ):
         if media_source.is_media_source_id(media_id):
+            media_type = MediaType.URL
             play_item = await media_source.async_resolve_media(
-                self.hass, media_id, self.entity_id
+                self.hass,
+                media_id,
+                self.entity_id,
             )
             media_id = async_process_play_media_url(self.hass, play_item.url)
 
         await self.api.set_browse_media(media_id)
 
-    async def async_select_source(self, source: str) -> None:
+    async def async_select_source(self, source):
         await self.api.set_source(source)
         self._current_source = source
         self.async_write_ha_state()
 
-    async def async_volume_up(self) -> None:
-        new_vol = min(1.0, self._volume + 0.05)
+    async def async_volume_up(self):
+        new_vol = min(1.0, float(self._volume) + 0.05)
         await self.async_set_volume_level(new_vol)
         self._volume = new_vol
 
-    async def async_volume_down(self) -> None:
-        new_vol = max(0.0, self._volume - 0.05)
+    async def async_volume_down(self):
+        new_vol = max(0.0, float(self._volume) - 0.05)
         await self.async_set_volume_level(new_vol)
         self._volume = new_vol
 
-    async def async_media_next_track(self) -> None:
+    async def async_media_next_track(self):
         await self.api.set_command("next")
 
-    async def async_media_previous_track(self) -> None:
+    async def async_media_previous_track(self):
         await self.api.set_command("prev")
 
-    async def async_media_stop(self) -> None:
+    async def async_media_stop(self):
         await self.api.set_command("stop")
         self._state = MediaPlayerState.IDLE
 
-    async def async_media_play(self) -> None:
+    async def async_media_play(self):
         await self.api.set_command("start")
         self._state = MediaPlayerState.PLAYING
 
-    async def async_media_pause(self) -> None:
+    async def async_media_pause(self):
         await self.api.set_command("stop")
         self._state = MediaPlayerState.IDLE
 
-    async def async_turn_off(self) -> None:
+    async def async_turn_off(self):
         await self.api.set_command("turnoff")
         self._state = MediaPlayerState.OFF
 
-    async def async_turn_on(self, **kwargs) -> None:
+    async def async_turn_on(self, **kwargs):
         await self.api.set_command("turnon")
         self._state = MediaPlayerState.IDLE

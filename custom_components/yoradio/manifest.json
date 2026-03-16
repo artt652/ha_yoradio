@@ -1,0 +1,9 @@
+{
+    "domain": "yoradio",
+    "name": "ёRadio",
+    "documentation": "https://github.com/artt652/ha_yoradio",
+    "dependencies": ["http", "mqtt"],
+    "codeowners": ["@e2002, artt652"],
+    "requirements": [],
+    "version": "0.10"
+  }

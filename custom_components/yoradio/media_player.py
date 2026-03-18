@@ -60,20 +60,17 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 COVER_CACHE_MAX = 200
 cover_cache: OrderedDict = OrderedDict()
 
-
 def cover_cache_get(key):
     if key in cover_cache:
         cover_cache.move_to_end(key)
         return cover_cache[key]
     return None
 
-
 def cover_cache_set(key, value):
     cover_cache[key] = value
     cover_cache.move_to_end(key)
     if len(cover_cache) > COVER_CACHE_MAX:
         cover_cache.popitem(last=False)
-
 
 def clean_title(text):
     if not text:
@@ -89,13 +86,11 @@ def clean_title(text):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-
 def parse_artist_title(artist, title):
     if title and " - " in title:
         parts = title.split(" - ", 1)
         return parts[0].strip(), parts[1].strip()
     return artist, title
-
 
 def is_service_message(title: str) -> bool:
     if not title:
@@ -105,6 +100,7 @@ def is_service_message(title: str) -> bool:
         "host not available",
         "Error connecting to",
         "ContentType",
+        "unknown content found at",
         "[ready]",
         "[stopped]",
         "[connecting]",
@@ -113,7 +109,6 @@ def is_service_message(title: str) -> bool:
         "[остановлено]",
     ]
     return any(word in t for word in service_words)
-
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     root_topic = config.get(CONF_ROOT_TOPIC)
@@ -124,7 +119,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     api = yoradioApi(root_topic, hass, playlist)
 
     async_add_entities([yoradioDevice(name, max_volume, api)], True)
-
 
 class yoradioApi:
 
@@ -169,7 +163,6 @@ class yoradioApi:
                 self.playlist.append(str(counter) + ". " + res[0])
                 counter += 1
 
-
 class yoradioDevice(MediaPlayerEntity):
 
     def __init__(self, name, max_volume, api):
@@ -178,7 +171,7 @@ class yoradioDevice(MediaPlayerEntity):
         self._state = MediaPlayerState.OFF
         self._volume = 0
         self._max_volume = max_volume
-
+        self._media_content_type = "music"
         self._media_title = ""
         self._track_artist = ""
         self._media_channel = ""
@@ -342,7 +335,11 @@ class yoradioDevice(MediaPlayerEntity):
     @property
     def source_list(self):
         return self.api.playlist
-
+        
+    @property
+    def media_content_type(self):
+        return self._media_content_type
+        
     async def async_set_volume_level(self, volume):
         await self.api.set_volume(round(volume * self._max_volume))
 

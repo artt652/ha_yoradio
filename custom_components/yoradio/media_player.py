@@ -27,7 +27,7 @@ VERSION = "0.10"
 
 _LOGGER = logging.getLogger(__name__)
 
-FALLBACK_COVER = "https://raw.githubusercontent.com/artt652/ha_yoradio/refs/heads/main/images/yoradio.png"
+FALLBACK_COVER = "https://raw.githubusercontent.com/artt652/ha_yoradio/refs/heads/main/images/yoradio.svg"
 
 SUPPORT_YORADIO = (
     MediaPlayerEntityFeature.PAUSE

@@ -453,7 +453,7 @@ class yoradioDevice(MediaPlayerEntity):
         for word in artist_words + title_words:
             if word and word[0].isalpha():
                 initials += word[0].upper()
-            if len(initials) >= 4:
+            if len(initials) >= 2:
                 break
 
         if not initials:
@@ -472,12 +472,11 @@ class yoradioDevice(MediaPlayerEntity):
             f"&size=400"
             f"&background={bg_color}"
             f"&color=fff"
-            f"&length=1"
-            f"&rounded=true"
+            f"&length={len(initials)}"
+            f"&rounded=false"
             f"&bold=true"
             f"&format=svg"
         )
-        # f"&length={len(initials)}"
         
         # Cache the result
         if len(ui_avatar_cache) > UI_AVATAR_CACHE_MAX:

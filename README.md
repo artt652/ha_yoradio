@@ -4,7 +4,7 @@
 ![Version](https://img.shields.io/badge/version-0.11.0-blue.svg)
 ![Maintenance](https://img.shields.io/maintenance/yes/2026.svg)
 
-Улучшенная интеграция [yoRadio]([https://github.com/artt652/yoRadio](https://github.com/e2002/yoradio/tree/main/HA)) для Home Assistant с расширенным функционалом и многоуровневым поиском обложек.
+Улучшенная интеграция [yoRadio](https://github.com/e2002/yoradio/tree/main/HA) для Home Assistant с расширенным функционалом и многоуровневым поиском обложек.
 
 ## ✨ Отличия от оригинальной версии
 
@@ -53,28 +53,31 @@ media_player:
 
 
 📦 Установка:
-Через HACS (рекомендуется)
-Добавьте этот репозиторий как пользовательский репозиторий HACS
+Через HACS (рекомендуется):
 
-URL: https://github.com/artt652/ha_yoradio
+1. Добавьте этот репозиторий как пользовательский репозиторий HACS:
+
+URL: ```https://github.com/artt652/ha_yoradio```
 
 Категория: Integration
 
-Найдите и установите "yoRadio"
+2. Найдите в HACS и установите "yoRadio"
 
-Ручная установка
-Скопируйте папку custom_components/yoradio в директорию custom_components вашего Home Assistant
+Ручная установка:
 
-Перезапустите Home Assistant
+1. Скопируйте папку custom_components/yoradio в директорию custom_components вашего Home Assistant
 
-🔧 Конфигурация
-Минимальная
+2. Перезапустите Home Assistant
+
+🔧 Конфигурация:
+
+Минимальная:
 ```yaml
 media_player:
   - platform: yoradio
     root_topic: yoradio
 ```
-Полная
+Полная:
 ```yaml
 media_player:
   - platform: yoradio

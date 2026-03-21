@@ -31,7 +31,7 @@ VERSION = "0.11.0"
 
 _LOGGER = logging.getLogger(__name__)
 
-FALLBACK_COVER = "https://raw.githubusercontent.com/home-assistant/brands/refs/heads/master/custom_integrations/yoradio/icon%402x.png"
+FALLBACK_COVER = "https://raw.githubusercontent.com/artt652/ha_yoradio/refs/heads/main/images/yoradio.svg"
 
 SUPPORT_YORADIO = (
     MediaPlayerEntityFeature.PAUSE
@@ -389,12 +389,16 @@ class yoradioDevice(MediaPlayerEntity):
         for source in self._cover_sources:
             cover = None
             
-            if source == "itunes":
-                cover = await self._fetch_from_itunes(artist, title)
-            elif source == "ui_avatars":
-                cover = self._generate_ui_avatar(artist, title)
-            elif source == "gravatar":
-                cover = await self._fetch_from_gravatar(artist)
+            try:
+                if source == "itunes":
+                    cover = await self._fetch_from_itunes(artist, title)
+                elif source == "ui_avatars":
+                    cover = self._generate_ui_avatar(artist, title)
+                elif source == "gravatar":
+                    cover = await self._fetch_from_gravatar(artist)
+            except Exception as e:
+                _LOGGER.debug(f"Error fetching cover from {source}: {e}")
+                continue
             
             if cover:
                 cover_cache_set(query, cover)
@@ -456,8 +460,9 @@ class yoradioDevice(MediaPlayerEntity):
             if len(initials) >= 2:
                 break
 
+        # If no initials, skip UI Avatars and try Gravatar
         if not initials:
-            initials = artist[0].upper() if artist else "?"
+            return None
 
         # Pick color based on hash
         color_index = hash(artist + title) % len(UI_AVATARS_COLORS)
@@ -487,11 +492,15 @@ class yoradioDevice(MediaPlayerEntity):
 
     async def _fetch_from_gravatar(self, artist: str) -> Optional[str]:
         """Fetch avatar from Gravatar based on artist name."""
+        # Skip if artist name is too short
+        if not artist or len(artist) < 2:
+            return None
+            
         # Create pseudo-email from artist name
         pseudo_email = f"{artist.lower().replace(' ', '')}@example.com".encode('utf-8')
         email_hash = hashlib.md5(pseudo_email).hexdigest()
 
-        # Gravatar URL with size and 404 default
+        # Gravatar URL with size and 404 default (no default image)
         gravatar_url = f"https://www.gravatar.com/avatar/{email_hash}?s=400&d=404"
 
         session = async_get_clientsession(self.hass)
@@ -499,10 +508,11 @@ class yoradioDevice(MediaPlayerEntity):
             async with session.get(gravatar_url, timeout=COVER_FETCH_TIMEOUT) as resp:
                 if resp.status == 200:
                     content_type = resp.headers.get('Content-Type', '')
-                    if content_type.startswith('image/'):
+                    # Verify it's an image and not a default avatar
+                    if content_type and content_type.startswith('image/'):
                         return gravatar_url
         except (ClientError, asyncio.TimeoutError) as e:
-            _LOGGER.debug(f"Gravatar error: {e}")
+            _LOGGER.debug(f"Gravatar error for {artist}: {e}")
 
         return None
 
